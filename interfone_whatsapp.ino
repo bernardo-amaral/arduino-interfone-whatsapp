@@ -13,10 +13,10 @@ ESP8266WiFiMulti WiFiMulti;
 
 const char *WIFI_SSID = "Nome da Sua Rede";
 const char *WIFI_PASSWORD = "Senha da Sua Rede";
-const char *SERVER_URL = "https://api.callmebot.com/whatsapp.php?";
-const char *PHONE = "phone=5511999999999";
-const char *MESSAGE = "&text=Sua+mensagem+de+teste";
-const char *API_KEY = "&apikey=999999999";
+const char *SERVER_URL = "http://api.callmebot.com/whatsapp.php?";
+const char *PHONE = "phone=00000000000";
+const char *MESSAGE = "&text=Olá!+alguém+está+tocando+o+seu+interfone";
+const char *API_KEY = "&apikey=00000000";
 char REQUEST_URL[200];  // URL de requisição
 
 const int VP_PIN = 36;  // Pino VP do ESP32
@@ -50,16 +50,17 @@ void setup() {
     WiFiMulti.addAP(wifiManager.getWiFiSSID().c_str(),
                     wifiManager.getWiFiPass().c_str());
 
-    Serial.println(F("WIFIManager connected!"));
-    Serial.print(F("IP --> "));
+    Serial.println("");
+    Serial.println("WiFi connected");
+    Serial.println("IP address: ");
     Serial.println(WiFi.localIP());
-    Serial.print(F("GW --> "));
+    Serial.print(F("Gateway: "));
     Serial.println(WiFi.gatewayIP());
-    Serial.print(F("SM --> "));
+    Serial.print(F("Sub-Mask: "));
     Serial.println(WiFi.subnetMask());
-    Serial.print(F("DNS 1 --> "));
+    Serial.print(F("DNS 1: "));
     Serial.println(WiFi.dnsIP(0));
-    Serial.print(F("DNS 2 --> "));
+    Serial.print(F("DNS 2: "));
     Serial.println(WiFi.dnsIP(1));
 }
 
@@ -69,25 +70,32 @@ void loop() {
 
     float voltageValue = voltage / 4095.0 * 12;
 
-    if ((WiFiMulti.run() == WL_CONNECTED)) {
+    if ((WiFi.status() == WL_CONNECTED)) {
         WiFiClient client;
         HTTPClient http;
 
-        if (voltageValue > 6) {
+          if (voltageValue > 0) {
+            Serial.print("[VOLTAGE] Detected:  " + String(voltageValue) + "\n");
+          }
+
+          if (voltageValue > 3) {
             Serial.print("[HTTP] begin...\n");
             if (http.begin(client, REQUEST_URL)) {
-                Serial.print("[HTTP] GET...\n");
+                Serial.print("[HTTP] GET " + String(REQUEST_URL) + "\n");
+
+                http.addHeader("Content-Type", "application/json");
+                http.addHeader("Accept", "application/json");
+
                 int httpCode = http.GET();
                 if (httpCode > 0) {
                     Serial.printf("[HTTP] GET... code: %d\n", httpCode);
-                    if (httpCode == HTTP_CODE_OK ||
-                        httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
+
+                    if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
                         String payload = http.getString();
                         Serial.println(payload);
                     }
                 } else {
-                    Serial.printf("[HTTP] GET... failed, error: %s\n",
-                                  http.errorToString(httpCode).c_str());
+                    Serial.printf("[HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
                 }
                 http.end();
             } else {
