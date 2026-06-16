@@ -1,107 +1,108 @@
-#include <Arduino.h>
-#include <DNSServer.h>
-#include <ESP8266HTTPClient.h>
-#include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
-#include <ESP8266WiFiMulti.h>
-#include <WiFiClient.h>
-#include <string.h>
+#include <WiFiManager.h>
+#include <ESP8266HTTPClient.h>
 
-#include "WiFiManager.h"  //https://github.com/tzapu/WiFiManager
+#define SENSOR_PIN A0
+#define LED_PIN D5
+#define SENSITIVITY 185.0
+#define NUM_SAMPLES 500
+#define OFFSET_MANUAL 0.035
+#define THRESHOLD 4.0 //A
+#define COOLDOWN_MS 30000  
 
-ESP8266WiFiMulti WiFiMulti;
+float offsetRaw = 0;
+unsigned long ultimoEnvio = 0;
 
-const char *WIFI_SSID = "Nome da Sua Rede";
-const char *WIFI_PASSWORD = "Senha da Sua Rede";
-const char *SERVER_URL = "http://api.callmebot.com/whatsapp.php?";
-const char *PHONE = "phone=00000000000";
-const char *MESSAGE = "&text=Olá!+alguém+está+tocando+o+seu+interfone";
-const char *API_KEY = "&apikey=00000000";
-char REQUEST_URL[200];  // URL de requisição
+const char *PHONE = "00000000000";
+const char *MESSAGE = "Olá!+alguém+está+tocando+o+seu+interfone";
+const char *API_KEY = "00000000";
 
-const int VP_PIN = 36;  // Pino VP do ESP32
+WiFiClient client;
+HTTPClient http;
 
-void configModeCallback(WiFiManager *myWiFiManager) {
-    Serial.println("Entered config mode");
-    Serial.println(WiFi.softAPIP());
-    Serial.println(myWiFiManager->getConfigPortalSSID());
+void sendWhatsappMessage() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[HTTP] Sem WiFi — mensagem não enviada.");
+    return;
+  }
+
+  unsigned long agora = millis();
+  if (agora - ultimoEnvio < COOLDOWN_MS) {
+    Serial.println("[HTTP] Cooldown ativo — aguardando...");
+    return;
+  }
+
+  String url = String("http://api.callmebot.com/whatsapp.php?phone=")
+               + PHONE
+               + "&text=" + MESSAGE
+               + "&apikey=" + API_KEY;
+
+  Serial.println("[HTTP] Enviando para: " + url);
+
+  if (http.begin(client, url)) {
+    int httpCode = http.GET();
+
+    if (httpCode > 0) {
+      Serial.printf("[HTTP] Código: %d\n", httpCode);
+      if (httpCode == HTTP_CODE_OK) {
+        Serial.println(http.getString());
+      }
+    } else {
+      Serial.printf("[HTTP] Erro: %s\n", http.errorToString(httpCode).c_str());
+    }
+
+    http.end();
+    ultimoEnvio = millis();
+  } else {
+    Serial.println("[HTTP] Não foi possível conectar.");
+  }
 }
 
 void setup() {
-    Serial.begin(115200);
+  Serial.begin(115200);
 
-    strcpy(REQUEST_URL, SERVER_URL);
-    strcat(REQUEST_URL, PHONE);
-    strcat(REQUEST_URL, MESSAGE);
-    strcat(REQUEST_URL, API_KEY);
+  WiFiManager wm;
+  // wm.resetSettings(); // descomente para forçar reconfiguração
 
-    WiFiManager wifiManager;
-    // wifiManager.resetSettings();
+  bool ok = wm.autoConnect("PhoneWhatsapp", "1234");
+  if (!ok) {
+    Serial.println("Falha ao conectar. Reiniciando...");
+    ESP.restart();
+  }
 
-    wifiManager.setAPCallback(configModeCallback);
+  Serial.println("WiFi conectado!");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
 
-    if (!wifiManager.autoConnect("esp8266 interfone")) {
-        Serial.println("failed to connect and hit timeout");
-        ESP.reset();
-        delay(1000);
-    }
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
 
-    WiFi.mode(WIFI_STA);
-    WiFiMulti.addAP(wifiManager.getWiFiSSID().c_str(),
-                    wifiManager.getWiFiPass().c_str());
+  long soma = 0;
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    soma += analogRead(SENSOR_PIN);
+    delay(2);
+  }
 
-    Serial.println("");
-    Serial.println("WiFi connected");
-    Serial.println("IP address: ");
-    Serial.println(WiFi.localIP());
-    Serial.print(F("Gateway: "));
-    Serial.println(WiFi.gatewayIP());
-    Serial.print(F("Sub-Mask: "));
-    Serial.println(WiFi.subnetMask());
-    Serial.print(F("DNS 1: "));
-    Serial.println(WiFi.dnsIP(0));
-    Serial.print(F("DNS 2: "));
-    Serial.println(WiFi.dnsIP(1));
+  offsetRaw = soma / (float)NUM_SAMPLES;
+  Serial.print("Offset RAW calibrado: ");
+  Serial.println(offsetRaw);
 }
 
 void loop() {
-    HTTPClient http;
-    int voltage = analogRead(VP_PIN);
+  int raw = analogRead(SENSOR_PIN);
 
-    float voltageValue = voltage / 4095.0 * 12;
+  float deltaRaw = raw - offsetRaw;
+  float deltaVolts = (deltaRaw / 1023.0) * 3.3;
+  float corrente = (deltaVolts / (SENSITIVITY / 1000.0)) + OFFSET_MANUAL;
 
-    if ((WiFi.status() == WL_CONNECTED)) {
-        WiFiClient client;
-        HTTPClient http;
+  Serial.println(corrente, 3);
 
-          if (voltageValue > 0) {
-            Serial.print("[VOLTAGE] Detected:  " + String(voltageValue) + "\n");
-          }
+  if (abs(corrente) > THRESHOLD) {
+    digitalWrite(LED_PIN, HIGH);
+    sendWhatsappMessage();  
+  } else {
+    digitalWrite(LED_PIN, LOW);
+  }
 
-          if (voltageValue > 3) {
-            Serial.print("[HTTP] begin...\n");
-            if (http.begin(client, REQUEST_URL)) {
-                Serial.print("[HTTP] GET " + String(REQUEST_URL) + "\n");
-
-                http.addHeader("Content-Type", "application/json");
-                http.addHeader("Accept", "application/json");
-
-                int httpCode = http.GET();
-                if (httpCode > 0) {
-                    Serial.printf("[HTTP] GET... code: %d\n", httpCode);
-
-                    if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
-                        String payload = http.getString();
-                        Serial.println(payload);
-                    }
-                } else {
-                    Serial.printf("[HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
-                }
-                http.end();
-            } else {
-                Serial.println("[HTTP] Unable to connect");
-            }
-        }
-    }
-    delay(200);
+  delay(100);
 }
